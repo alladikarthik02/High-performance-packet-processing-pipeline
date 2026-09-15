@@ -1,0 +1,9 @@
+default accept
+drop tcp 203.0.113.0/24 any -> any 10000
+drop tcp 203.0.113.0/24 any -> any 10001
+drop tcp 203.0.113.0/24 any -> any 10002
+drop tcp 203.0.113.0/24 any -> any 10003
+drop tcp 203.0.113.0/24 any -> any 10004
+drop tcp 203.0.113.0/24 any -> any 10005
+drop tcp 203.0.113.0/24 any -> any 10006
+drop tcp 203.0.113.0/24 any -> any 10007

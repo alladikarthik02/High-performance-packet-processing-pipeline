@@ -1,0 +1,19 @@
+# Build output
+build/
+build-linux/
+
+# Generated test data (regenerate with: ./build-linux/pktgen pcaps 50000)
+pcaps/*.pcap
+pcaps/fuzz_corpus/
+
+# Compiler/CMake artifacts if anyone builds in-tree
+*.o
+*.a
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/

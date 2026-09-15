@@ -1,0 +1,26 @@
+# example.rules — a small policy that exercises every feature of the language.
+#
+# Evaluated top to bottom. accept/drop/log are terminal (first match wins);
+# count is not — it tallies and lets evaluation continue.
+
+default accept
+
+# --- monitoring: count first, decide later ---------------------------------
+count  tcp any any            -> any 443            # all HTTPS
+count  udp any any            -> any 53             # all DNS
+
+# --- policy ----------------------------------------------------------------
+drop   tcp any any            -> any 22             # no SSH
+drop   tcp any any            -> any 23             # no telnet
+accept tcp 192.168.0.0/16 any -> 10.0.0.0/8 80-443  # internal web
+accept udp 192.168.0.0/16 any -> 8.8.8.8    53      # DNS to Google
+
+# --- overlay ---------------------------------------------------------------
+# Matches the TENANT's flow inside a VXLAN tunnel; vni selects which tenant.
+accept tcp 172.16.0.0/16 any  -> any 8080  vni 5000
+
+# --- VLAN ------------------------------------------------------------------
+count  any any any            -> any any  vlan 100
+
+# --- IPv6 ------------------------------------------------------------------
+accept tcp any any            -> any 443  ip6

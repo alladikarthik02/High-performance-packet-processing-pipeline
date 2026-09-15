@@ -1,0 +1,333 @@
+===============================================================================
+ pktpipe — COMMAND REFERENCE
+ All commands run from the project root:   cd ~/Downloads/pktpipe
+===============================================================================
+
+
+-------------------------------------------------------------------------------
+ QUICK START — if you have 3 minutes
+-------------------------------------------------------------------------------
+
+  open -a Docker
+  ./docker/dev.sh build
+  ./docker/dev.sh ci
+
+Ends with:  100% tests passed, 0 tests failed out of 10
+That is the one thing worth having on screen if asked to show the project.
+
+
+-------------------------------------------------------------------------------
+ 1. START DOCKER
+-------------------------------------------------------------------------------
+
+  open -a Docker
+
+Wait ~10-30 seconds for the engine to come up. Check it is ready:
+
+  docker ps
+
+If that prints a table header (not an error), you are good.
+
+
+-------------------------------------------------------------------------------
+ 2. BUILD THE LINUX IMAGE
+-------------------------------------------------------------------------------
+
+The image was deleted, so the FIRST run must rebuild it (~30 seconds):
+
+  ./docker/dev.sh build
+
+Installs Debian + gcc + clang + libpcap + tcpdump + perf + fuzzer runtimes
+inside the container.
+
+
+-------------------------------------------------------------------------------
+ 3. THE ONE COMMAND THAT DOES EVERYTHING
+-------------------------------------------------------------------------------
+
+Configure + compile + run all 10 test suites:
+
+  ./docker/dev.sh ci
+
+
+-------------------------------------------------------------------------------
+ 4. THE INDIVIDUAL STEPS
+-------------------------------------------------------------------------------
+
+Configure the build:
+
+  ./docker/dev.sh cmake
+
+Compile:
+
+  ./docker/dev.sh make
+
+Run the tests:
+
+  ./docker/dev.sh test
+
+Run one specific test suite:
+
+  ./docker/dev.sh run ./build-linux/test_l2
+
+Open a shell inside the Linux container:
+
+  ./docker/dev.sh shell
+
+
+-------------------------------------------------------------------------------
+ 5. GENERATE THE TEST PACKET FILES
+-------------------------------------------------------------------------------
+
+Needed before any benchmark or replay run. Makes 50,000 packets:
+
+  ./docker/dev.sh run ./build-linux/pktgen pcaps 50000
+
+Produces:
+    pcaps/uniform_tcp.pcap   identical TCP packets (the control)
+    pcaps/mixed.pcap         realistic protocol mix
+    pcaps/hostile.pcap       90 malformed / attack packets
+
+
+-------------------------------------------------------------------------------
+ 6. RUN THE ACTUAL PIPELINE
+-------------------------------------------------------------------------------
+
+Replay a capture file through the pipeline:
+
+  ./docker/dev.sh run ./build-linux/pktpipe --pcap pcaps/mixed.pcap --rules rules/example.rules
+
+Replay 20 times (warm numbers, better for timing):
+
+  ./docker/dev.sh run ./build-linux/pktpipe --pcap pcaps/uniform_tcp.pcap --rules rules/example.rules --repeat 20
+
+Check what machine it thinks it is on:
+
+  ./docker/dev.sh run ./build-linux/cacheinfo
+
+
+-------------------------------------------------------------------------------
+ 7. THE BENCHMARK  (batch / prefetch / rule-count sweeps)
+-------------------------------------------------------------------------------
+
+  ./docker/dev.sh run ./build-linux/bench pcaps/uniform_tcp.pcap 20
+
+Takes a few minutes. 7 runs per configuration, reports medians.
+
+
+-------------------------------------------------------------------------------
+ 8. LIVE CAPTURE — THE AF_PACKET DEMO  (the headline)
+-------------------------------------------------------------------------------
+
+Creates a virtual network cable, sends 50,000 real packets down it,
+captures them with the shared-memory ring:
+
+  docker run --rm --cap-add=NET_RAW --cap-add=NET_ADMIN -v "$PWD":/work -w /work pktpipe-dev bash -c 'ip link add veth0 type veth peer name veth1; ip link set veth0 up; ip link set veth1 up; ./build-linux/pktpipe --iface veth1 --rules rules/example.rules --count 50000 --no-promisc & sleep 1; ./build-linux/pktsend --iface veth0 --count 50000 --dport 443; wait'
+
+Expected:  50000 captured, KERNEL DROPS 0
+
+
+To see the 73% DROP comparison, same thing with --mode recvfrom:
+
+  docker run --rm --cap-add=NET_RAW --cap-add=NET_ADMIN -v "$PWD":/work -w /work pktpipe-dev bash -c 'ip link add veth0 type veth peer name veth1; ip link set veth0 up; ip link set veth1 up; timeout 30 ./build-linux/pktpipe --iface veth1 --rules rules/example.rules --count 50000 --no-promisc --mode recvfrom & sleep 1; ./build-linux/pktsend --iface veth0 --count 50000 --dport 443; wait'
+
+Expected:  ~13,503 captured, ~36,513 KERNEL DROPS  (73% lost)
+
+  --cap-add=NET_RAW    lets the container open raw sockets
+  --cap-add=NET_ADMIN  lets it create the virtual cable
+
+
+-------------------------------------------------------------------------------
+ 9. THE FUZZER
+-------------------------------------------------------------------------------
+
+Runs 60 seconds with memory-safety checkers armed:
+
+  ./docker/dev.sh run bash -c 'clang -std=c11 -g -O1 -fsanitize=fuzzer-no-link,address,undefined -Iinclude -c src/parse.c -o /tmp/p.o && clang -std=c11 -g -O1 -fsanitize=fuzzer-no-link,address,undefined -Iinclude -c src/pkt.c -o /tmp/k.o && clang++ -std=c++17 -g -O1 -fsanitize=fuzzer-no-link,address,undefined -Iinclude -c tests/fuzz_parse.cpp -o /tmp/f.o && clang++ -fsanitize=fuzzer,address,undefined /tmp/f.o /tmp/p.o /tmp/k.o -o /tmp/fuzz && /tmp/fuzz -max_total_time=60 pcaps/fuzz_corpus/'
+
+Previous result:  41,085,992 inputs, 0 crashes, slowest unit 0 seconds
+
+
+-------------------------------------------------------------------------------
+ 10. PROFILING AND INSPECTION
+-------------------------------------------------------------------------------
+
+Profile — see which function eats the time:
+
+  docker run --rm --cap-add=SYS_ADMIN -v "$PWD":/work -w /work pktpipe-dev bash -c 'perf record -q -F 999 -e cpu-clock -o /tmp/perf.data -- ./build-linux/pktpipe --pcap pcaps/mixed.pcap --rules rules/example.rules --repeat 40 --quiet >/dev/null 2>&1; perf report -i /tmp/perf.data --stdio --no-children --percent-limit 2'
+
+Previous result:  pp_classify 56.57%, pp_parse 19.19%
+
+
+Count page faults (the CHAL-018 measurement):
+
+  ./docker/dev.sh run bash -c 'perf stat -e page-faults ./build-linux/pktpipe --pcap pcaps/uniform_tcp.pcap --rules rules/empty.rules --repeat 1 --quiet'
+
+Previous result:  172 faults COLD and 171 WARM  (disproved the page-fault theory)
+
+
+Count system calls (the 743-vs-7 measurement):
+
+  ./docker/dev.sh run bash -c 'strace -c -e trace=recvfrom,poll,ppoll ./build-linux/pktpipe --pcap pcaps/uniform_tcp.pcap --rules rules/example.rules --quiet'
+
+
+Check your generated packets with an INDEPENDENT tool:
+
+  ./docker/dev.sh run bash -c 'tcpdump -r pcaps/mixed.pcap -c 5 -nn'
+
+
+Verify the safe byte-read compiles to one instruction:
+
+  ./docker/dev.sh run bash -c 'gcc -O2 -std=c11 -Iinclude -c src/parse.c -o /tmp/p.o && objdump -d --no-show-raw-insn /tmp/p.o | head -40'
+
+Looking for:  ldrh  +  rev16   (same as the unsafe cast would produce)
+
+
+-------------------------------------------------------------------------------
+ 11. RUNNING YOUR OWN FILES  (any pcap, any rules)
+-------------------------------------------------------------------------------
+
+  *** IMPORTANT: the container can ONLY see files inside ~/Downloads/pktpipe ***
+  dev.sh mounts the project folder to /work. A file anywhere else is invisible.
+
+
+--- 11a. Run any pcap you already have -----------------------------------------
+
+Step 1: copy the file into the project
+
+  cp ~/Downloads/whatever.pcap pcaps/
+
+Step 2: run it
+
+  ./docker/dev.sh run ./build-linux/pktpipe --pcap pcaps/whatever.pcap --rules rules/example.rules
+
+
+--- 11b. Run a pcap WITHOUT copying it (extra mount) ----------------------------
+
+Mounts your Downloads folder read-only at /data inside the container:
+
+  docker run --rm -v "$PWD":/work -v "$HOME/Downloads":/data:ro -w /work pktpipe-dev ./build-linux/pktpipe --pcap /data/whatever.pcap --rules rules/example.rules
+
+
+--- 11c. Write and run your own rules file -------------------------------------
+
+Create it:
+
+  nano rules/my.rules
+
+Example contents:
+
+  default accept
+  drop   tcp any any            -> any 22
+  count  udp any any            -> any 53
+  accept tcp 192.168.0.0/16 any -> 10.0.0.0/8 80-443
+
+Run it:
+
+  ./docker/dev.sh run ./build-linux/pktpipe --pcap pcaps/mixed.pcap --rules rules/my.rules
+
+Check the rules compile without running any packets:
+
+  ./docker/dev.sh run ./build-linux/pktpipe --pcap pcaps/hostile.pcap --rules rules/my.rules --quiet
+
+
+--- 11d. If a pcap is REJECTED --------------------------------------------------
+
+  "linktype 113 is not Ethernet (1); captures from `-i any` are cooked-mode
+   and unsupported"
+
+This is DELIBERATE, not a bug. `tcpdump -i any` writes a different format with a
+16-byte pseudo-header where Ethernet would be. Parsing it as Ethernet produces
+believable garbage, so the reader refuses. Re-capture naming ONE interface:
+
+  sudo tcpdump -i en0 -w mycapture.pcap -c 1000
+
+  "not a pcap file (magic = 0x...); pcapng is not supported"
+
+Modern Wireshark saves .pcapng by default. Convert it:
+
+  ./docker/dev.sh run bash -c 'tcpdump -r pcaps/in.pcapng -w pcaps/out.pcap'
+
+Check any file's format before running it:
+
+  ./docker/dev.sh run bash -c 'tcpdump -r pcaps/whatever.pcap -c 3 -nn'
+
+
+--- 11e. Capture live on a real interface --------------------------------------
+
+List the interfaces the container can see:
+
+  docker run --rm --cap-add=NET_RAW --cap-add=NET_ADMIN pktpipe-dev ip -brief link
+
+Capture on one of them:
+
+  docker run --rm --cap-add=NET_RAW --cap-add=NET_ADMIN -v "$PWD":/work -w /work pktpipe-dev ./build-linux/pktpipe --iface eth0 --rules rules/example.rules --count 1000
+
+NOTE: this sees the CONTAINER's network, not your Mac's Wi-Fi. To capture the
+host's real traffic you would need --network=host, which Docker Desktop on macOS
+does not support (the container lives inside a Linux VM). For the interview demo
+use the veth pair in section 8 — it is real kernel networking either way.
+
+
+--- 11f. Useful flags ----------------------------------------------------------
+
+  --pcap FILE        replay a capture file
+  --rules FILE       rule file                       (REQUIRED)
+  --iface NAME       capture live instead            (needs CAP_NET_RAW)
+  --repeat N         replay the pcap N times         (warm timing)
+  --count N          stop after N packets
+  --batch N          packets per burst               (default 32)
+  --prefetch N       prefetch distance, 0 = off      (default 0)
+  --mode M           mmap | recvfrom                 (default mmap)
+  --no-promisc       do not enable promiscuous mode
+  --quiet            stats only
+  --help             show all options
+
+Show the help text:
+
+  ./docker/dev.sh run ./build-linux/pktpipe --help
+
+
+-------------------------------------------------------------------------------
+ 12. SHUTTING DOWN
+-------------------------------------------------------------------------------
+
+Stop Docker (frees the VM's RAM):
+
+  osascript -e 'quit app "Docker Desktop"'
+
+Check nothing is left running:
+
+  docker ps -a
+
+
+===============================================================================
+ TWO THINGS WORTH KNOWING
+===============================================================================
+
+WHY dev.sh EXISTS
+  Docker Desktop's credential helper is not on the shell's search path, so a
+  bare `docker build` fails with "docker-credential-desktop not found".
+  The script adds it automatically. Use ./docker/dev.sh rather than raw
+  docker commands where possible.
+
+WHY build-linux/ AND NOT build/
+  The Linux container uses a separate build directory from the macOS build,
+  so the two toolchains never fight over the same CMake cache.
+
+
+===============================================================================
+ NUMBERS TO EXPECT
+===============================================================================
+
+  Tests            10 suites, 136 groups, 2,230 assertions, all passing
+  Fuzzer           41,085,992 inputs, 0 crashes
+  Zero-alloc       50,000 packets, 1,563 batches, 0 allocations
+  Parse only       ~15 ns/packet warm (~65 Mpps), ~68 ns cold
+  With 8 rules     ~23 ns/packet
+  Per rule         ~1.1 ns, flat from 8 to 512 rules
+  recvfrom         13,503 captured, 36,513 dropped  (73% lost)
+  mmap ring        50,000 captured, 0 dropped
+  Syscalls/3000    743 (recvfrom) vs 7 (ring)  =  ~0.5 vs ~430 pkts/syscall
+
+===============================================================================
