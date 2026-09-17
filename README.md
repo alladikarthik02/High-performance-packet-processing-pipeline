@@ -284,3 +284,11 @@ do if it mattered?"* — see `docs/SPEC.md` §9.
   distance 32).
 - **`docs/CHALLENGES.md`** — every non-obvious bug and decision, written as it happened, with
   the interview answer for each.
+- **`docs/CHALLENGE_LOG.md`** — the engineering log: 19 bugs hit while building this, each with
+  the symptom, the wrong hypothesis, the measurement that settled it, and the fix.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
